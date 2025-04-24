@@ -1,0 +1,703 @@
+---
+title: "Practical homework 2"
+output: html_document
+date: "2025-04-13"
+---
+
+```{r setup, include=FALSE}
+# Load libraries ----------------------------------------------------------
+library(tidyverse)
+library(caret)
+
+# Load data ---------------------------------------------------------------
+
+load('/Users/joshuawilkes/Desktop/NSDUH_2023.Rdata')
+NSDUH_2023 = puf2023_102124
+
+NSDUH_2023
+# Select only variables of interest -------------------------------------------
+
+# select those that answered the youth experiences questions
+dfo <- NSDUH_2023[!is.na(NSDUH_2023$SCHFELT),]
+
+# make a vector of substance use column names
+substance_cols <- c(   # quantitative values for frequency of use
+                       'iralcfy', # alcohol frequency past year (1-365)
+                       'irmjfy', # marijuana frequency past year (1-365)
+                       'ircigfm', #cigarette frequency past month (1-30)
+                       'IRSMKLSS30N', # smokeless tobacco frequency past month (1-30)
+                       'iralcfm', # alcohol frequency past month (1-30)
+                       'irmjfm', # marijuana frequency past month (1-30)
+                       
+                       # quantitative values for age of first use
+                       'ircigage', # cigarette age of first use (1-55), 991=never used
+                       'irsmklsstry', # smokeless tobacco age of first use (1-70), 991=never used
+                       'iralcage', # alcohol age of first use (1-66), 991=never used
+                       'irmjage', # marijuana age of first use (1-83), 991=never used
+                       
+                       # binary categories for use at all
+                       'mrjflag', # marijuana ever used (0=never, 1=ever)
+                       'alcflag', # alcohol ever used (0=never, 1=ever)
+                       'tobflag', # any tobacco ever used (0=never, 1=ever)
+                       
+                       # multiclass categories for frequency of use 
+                       'alcydays', # number of days of alcohol in past year (1-5 categories, 6=none)
+                       'mrjydays', # number of days of marijuana in past year (1-5 categories, 6=none)
+                       'alcmdays', # number of days of alcohol in past month (1-4 categories, 5=none)
+                       'mrjmdays', # number of days of marijuana in past month (1-4 categories, 5=none)
+                       'cigmdays', # number of days of cigarettes in past month (1-5 categories, 6=none)
+                       'smklsmdays' # number of days of smokeless tobacco in past month (1-4 categories, 5=none)
+                      ) %>% toupper()
+
+# make a vector of demographic column names ------------------------
+demographic_cols <- c(
+                  'irsex', # binary sex (1=male, 2=female)
+                  'NEWRACE2', # race (7 categories)
+                  'HEALTH2', # overall health (4 categories)
+                  'eduschlgo', # now going to school (1=yes, 2=no)
+                  'EDUSCHGRD2', # what grade in now/will be in (11 categories, 98,99= blank/skip)
+                  'eduskpcom', #how many days skipped school in past month (1-30, 94/97/98/99=blank/skip)
+                  'imother', # for youth, mother in household (1=yes, 2=no, 3=don't know, 4=over 18)
+                  'ifather', # for youth, father in household (1=yes, 2=no, 3=don't know, 4=over 18)
+                  'income', # total family income (4 categories)
+                  'govtprog', # got gov assistance (1=yes, 2=no)
+                  'POVERTY3', # poverty level (4 categories)
+                  'PDEN10', # population density (1= >1M people, 2=<1M people, 3=can't be determined)
+                  'COUTYP4' # metro size status (1=large metro, 2=small metro, 3=nonmetro)
+                  ) %>% toupper()
+
+# select columns of interest
+df_youth <- dfo %>% select(SCHFELT:RLGFRND) # use all youth questions, start with schfelt and go through rlgfrnd
+df_substance <- dfo %>% select(substance_cols) # select specific substance columns of interest
+df_demog <- dfo %>% select(demographic_cols)  # select specific demographic columns of interest
+
+# combine into one data frame
+df = cbind(df_substance, df_youth, df_demog) #combine into one data frame
+
+# Fix metadata ------------------------------------------------------------
+
+# make vector of columns from the data that should be converted to factors, unordered and ordered
+unordered_factor_cols <- c(names(df_youth), # all columns from youth
+                           'mrjflag','alcflag','tobflag', # binary flag columns from substance
+                           'irsex','NEWRACE2','eduschlgo','imother','ifather','govtprog','PDEN10','COUTYP4' # unordered categories for demographics
+                           ) %>% toupper()
+ordered_factor_cols <- c('EDUSCHGRD2','HEALTH2','POVERTY3','income') %>% toupper()
+
+# convert to factors
+df[unordered_factor_cols] <- lapply(df[unordered_factor_cols], factor) # correct columns to unordered factors (e.g. yes, no)
+df[ordered_factor_cols] <- lapply(df[ordered_factor_cols], factor, ordered=TRUE) # correct columns to ordered factors (e.g. small, medium, large)
+
+# fix variable label metadata to only include the selected columns
+new_labels <- attr(dfo,'var.labels')[match(names(df), attr(dfo,'names'))]
+attr(df,'var.labels') <- new_labels
+
+# note: use attr(df,'var.labels') to see the labeled data
+
+youth_experience_cols = names(df_youth)
+
+# Save cleaned data ------------------------
+save(df, youth_experience_cols, substance_cols, demographic_cols, file = 'youth_data.Rdata')
+
+youth <- read.csv("/Users/joshuawilkes/Desktop/youth_data.csv")
+
+```
+
+
+
+What are the predictors for if a youth has smoked cigarettes
+
+Found two predictors that appear to correlate to whether an applicant was found to have a history of smoking cigarettes. Looking over the demographic columns used, two predictors were found with what grade surveyee will be and what what their overall health score was. with a higher health score indicating a higher chance of smoking and later grades being seen as more likely this decision tree was found to have an 8.9% training error and a 9.4% test error
+
+
+```{r include=TRUE}
+
+set.seed(1)
+library(tree)
+library(magrittr)
+library(rpart)
+library(rpart.plot) # or library(dplyr)
+demographic_cols <- c(
+  'irsex',      # binary sex (1=male, 2=female)
+  'NEWRACE2',   # race (7 categories)
+  'HEALTH2',    # overall health (4 categories)
+  'eduschlgo',  # now going to school (1=yes, 2=no)
+  'EDUSCHGRD2', # current/will be in what grade (11 categories, 98,99= blank/skip)
+  'eduskpcom',  # days skipped school in past month (1-30, 94/97/98/99=blank/skip)
+  'imother',    # for youth, mother in household (1=yes, 2=no, 3=don't know, 4=over 18)
+  'ifather',    # for youth, father in household (1=yes, 2=no, 3=don't know, 4=over 18)
+  'income',     # total family income (4 categories)
+  'govtprog',   # got government assistance (1=yes, 2=no)
+  'POVERTY3',   # poverty level (4 categories)
+  'PDEN10',     # population density (1= >1M people, 2=<1M people, 3=can't be determined)
+  'COUTYP4'     # metro size status (1=large metro, 2=small metro, 3=nonmetro)
+) %>% toupper()
+
+demographic_cols
+
+#setting up training and testing set
+cig.id = sample(1:nrow(youth), nrow(youth)/3)
+cig.train = youth[-cig.id,]
+cig.test = youth[cig.id,]
+cig.train$TOBFLAG <- as.factor(cig.train$TOBFLAG)
+cig.test$TOBFLAG <- as.factor(cig.test$TOBFLAG)
+
+#using demographics to find possible predictors of tobacco use
+formula_str <- paste("TOBFLAG ~", paste(demographic_cols, collapse = " + "))
+tree_formula <- as.formula(formula_str, )
+cig.tree <- tree(tree_formula, data = cig.train)
+
+#visualization
+
+
+#finding test error
+cig.pred <- predict(cig.tree, cig.test, type = "class")
+
+cig.table = table(cig.pred, cig.test$TOBFLAG)
+cig.table
+
+(cig.table[1,2]+cig.table[2,1])/sum(cig.table)
+cig_test_error <- (cig.table[1,2]+cig.table[2,1])/sum(cig.table) * 100
+cig_test_error
+
+```
+continuing investigating using random forest and bagging to find a more accurate model
+
+```{r include=TRUE}
+library(randomForest)
+library(gbm)
+set.seed(2)
+#cleaning training data of NA values
+cig.id = sample(1:nrow(youth), nrow(youth)/3)
+cig.train = youth[-cig.id,]
+cig.test = youth[cig.id,]
+cig.train$TOBFLAG <- as.factor(cig.train$TOBFLAG)
+cig.test$TOBFLAG <- as.factor(cig.test$TOBFLAG)
+
+cig.train_clean <- na.omit(cig.train)
+cig.test_clean <- na.omit(cig.test)
+
+
+
+#using bagging
+cig.bag <- randomForest(TOBFLAG ~ ., data = cig.train_clean[, c("TOBFLAG", demographic_cols)], mtry = length(demographic_cols), importance = TRUE, ntree = 100)
+
+Cigarette_Usage <- cig.bag
+plot(Cigarette_Usage)
+
+yhat.cig.bag <- predict(cig.bag, newdata =cig.test_clean)
+cig.bag.mean.error <- mean((yhat.cig.bag!= cig.test$TOBFLAG))
+cig.bag.mean.error
+summary(cig.bag)
+varImpPlot(cig.bag)
+importance(cig.bag)
+
+bag_importance <- importance(cig.bag)
+
+#visualization
+if ("MeanDecreaseGini" %in% colnames(bag_importance)) {
+  bag_importance_df <- data.frame(
+    Variable = rownames(bag_importance),
+    MeanDecreaseGini = bag_importance[, "MeanDecreaseGini"]
+  )
+  
+  # Descriptive labels for demographics
+  descriptive_labels <- c(
+    IRSEX = "Sex",
+    NEWRACE2 = "Race",
+    HEALTH2 = "General Health",
+    EDUSCHLGO = "School Enrollment",
+    EDUSCHGRD2 = "Grade Level",
+    EDUSKPCOM = "days skipped school",
+    IMOTHER = "Lives with Mother",
+    IFATHER = "Lives with Father",
+    INCOME = "Household Income",
+    GOVTPROG = "Government Assistance",
+    POVERTY3 = "Poverty Level",
+    PDEN10 = "Population Density",
+    COUTYP4 = "County Type"
+  )
+
+
+
+  bag_importance_df$DescriptiveName <- descriptive_labels[bag_importance_df$Variable]
+  
+ 
+  bag_importance_df$DescriptiveName[is.na(bag_importance_df$DescriptiveName)] <- bag_importance_df$Variable[is.na(bag_importance_df$DescriptiveName)]
+
+ 
+  bag_importance_df <- bag_importance_df[order(bag_importance_df$MeanDecreaseGini, decreasing = TRUE), ]
+  
+  
+  
+  # Plot
+  library(ggplot2)
+  ggplot(bag_importance_df, aes(x = reorder(DescriptiveName, MeanDecreaseGini), y = MeanDecreaseGini)) +
+    geom_col(fill = "#7570b3") +
+    coord_flip() +
+    labs(
+      title = "History of Cigarette Use (Bagging Model)",
+      subtitle = "Measured by Mean Decrease in Gini",
+      x = "Demographic Variable",
+      y = "Importance Score"
+    ) +
+    theme_minimal(base_size = 14)
+  
+} else {
+  print("MeanDecreaseGini column not found in importance output.")
+}
+
+
+
+```
+Using random forest for the history of cigarette use
+```{r}
+set.seed(2)
+#cleaning training data of NA values
+cig.id = sample(1:nrow(youth), nrow(youth)/3)
+cig.train = youth[-cig.id,]
+cig.test = youth[cig.id,]
+cig.train$TOBFLAG <- as.factor(cig.train$TOBFLAG)
+cig.test$TOBFLAG <- as.factor(cig.test$TOBFLAG)
+
+cig.train_clean <- na.omit(cig.train)
+cig.test_clean <- na.omit(cig.test)
+
+#tuning for optimal mtry number
+rf_control <- trainControl(method = "cv", number = 5)
+rf_grid <- expand.grid(
+  mtry = c(2, 4, 6, 8, 10)  # adjust based on number of predictors
+)
+
+#using random forest with predictors found using decision tree
+cig.rf <- randomForest(TOBFLAG ~ ., data = cig.train_clean[, c("TOBFLAG", demographic_cols)], mtry = 3, ntree = 100, importance = TRUE, trControl = rf_control, tuneGrid = rf_grid)
+
+Cigarette_Usage_RF <- cig.rf
+plot(Cigarette_Usage_RF)
+
+yhat.cig.rf <- predict(cig.rf, newdata =cig.test_clean)
+cig.rf.mean.error <- mean((yhat.cig.rf!= cig.test$TOBFLAG))
+cig.rf.mean.error
+summary(cig.bag)
+varImpPlot(cig.bag)
+importance(cig.bag)
+
+bag_importance <- importance(cig.bag)
+
+#Visualization
+if ("MeanDecreaseGini" %in% colnames(bag_importance)) {
+  bag_importance_df <- data.frame(
+    Variable = rownames(bag_importance),
+    MeanDecreaseGini = bag_importance[, "MeanDecreaseGini"]
+  )
+  
+  # Descriptive labels for demographics
+  descriptive_labels <- c(
+    IRSEX = "Sex",
+    NEWRACE2 = "Race",
+    HEALTH2 = "General Health",
+    EDUSCHLGO = "School Enrollment",
+    EDUSCHGRD2 = "Grade Level",
+    EDUSKPCOM = "days skipped school",
+    IMOTHER = "Lives with Mother",
+    IFATHER = "Lives with Father",
+    INCOME = "Household Income",
+    GOVTPROG = "Government Assistance",
+    POVERTY3 = "Poverty Level",
+    PDEN10 = "Population Density",
+    COUTYP4 = "County Type"
+  )
+
+
+  bag_importance_df$DescriptiveName <- descriptive_labels[bag_importance_df$Variable]
+  
+ 
+  bag_importance_df$DescriptiveName[is.na(bag_importance_df$DescriptiveName)] <- bag_importance_df$Variable[is.na(bag_importance_df$DescriptiveName)]
+
+  
+  bag_importance_df <- bag_importance_df[order(bag_importance_df$MeanDecreaseGini, decreasing = TRUE), ]
+  
+  
+  
+  # Plot
+  library(ggplot2)
+  ggplot(bag_importance_df, aes(x = reorder(DescriptiveName, MeanDecreaseGini), y = MeanDecreaseGini)) +
+    geom_col(fill = "#7570b3") +
+    coord_flip() +
+    labs(
+      title = "History of Cigarette Use (Random Forest)",
+      subtitle = "Measured by Mean Decrease in Gini",
+      x = "Demographic Variable",
+      y = "Importance Score"
+    ) +
+    theme_minimal(base_size = 14)
+  
+} else {
+  print("MeanDecreaseGini column not found in importance output.")
+}
+
+
+```
+
+
+Looking into number of cigarettes smoked per month in the survey
+
+```{r include=TRUE}
+library(vip)
+
+youth$CIGUSE_LEVEL <- factor(youth$CIGMDAYS,
+  levels = 1:6,
+  labels = c("1-2 days", "3-5 days", "6-9 days", "10-19 days", "20-29 days", "None")
+)
+youth_clean <- youth[!is.na(youth$CIGMDAYS), ]
+
+set.seed(3)
+cig.id = sample(1:nrow(youth_clean), nrow(youth_clean)/3)
+cig.train = youth_clean[-cig.id,]
+cig.test = youth_clean[cig.id,]
+
+cig.train_clean <- na.omit(cig.train)
+cig.test_clean <- na.omit(cig.test)
+
+demographic_cols
+
+
+
+#using demographics to find possible predictors of tobacco use
+formula_str <- paste("CIGUSE_LEVEL ~", paste(demographic_cols, collapse = " + "))
+tree_formula <- as.formula(formula_str)
+cig.tree <- tree(tree_formula, data = cig.train)
+
+#visualization
+summary(cig.tree)
+plot(cig.tree)
+text(cig.tree, pretty = 0)
+
+#finding test error
+cig.pred <- predict(cig.tree, cig.test, type = "class")
+
+conf_mat <- table(Predicted = cig.pred, Actual = cig.test$CIGUSE_LEVEL)
+print(conf_mat)
+
+cig.table = table(cig.pred, cig.test$CIGUSE_LEVEL)
+cig.table
+
+accuracy <- 100 * (1 - mean(cig.pred == cig.test$CIGUSE_LEVEL))
+accuracy
+
+
+demographic_cols
+
+#because decision tree largley had "none" as a factor we try random forest and boosting
+
+#tuning for optimal mtry number
+rf_control <- trainControl(method = "cv", number = 5)
+rf_grid <- expand.grid(
+  mtry = c(2, 4, 6, 8, 10)  # adjust based on number of predictors
+)
+
+cig.rf <- randomForest(CIGUSE_LEVEL ~ ., data = cig.train_clean[, c("CIGUSE_LEVEL", demographic_cols)], mtry = 3, ntree = 1000, importance = TRUE, trControl = rf_control, tuneGrid = rf_grid)
+
+Cigarette_Usage_Per_Month <- cig.rf
+
+plot(Cigarette_Usage_Per_Month)
+
+
+yhat.cig.rf <- predict(cig.rf, newdata =cig.test_clean)
+cig.rf.mean.error <- mean((yhat.cig.rf!= cig.test$TOBFLAG))
+cig.rf.mean.error
+
+pred.rf <- predict(cig.rf, cig.test)
+table(Predicted = pred.rf, Actual = cig.test$CIGUSE_LEVEL)
+
+
+#visualization
+descriptive_labels <- c(
+    IRSEX = "Sex",
+    NEWRACE2 = "Race",
+    HEALTH2 = "General Health",
+    EDUSCHLGO = "School Enrollment",
+    EDUSCHGRD2 = "Grade Level",
+    EDUSKPCOM = "days skipped school",
+    IMOTHER = "Lives with Mother",
+    IFATHER = "Lives with Father",
+    INCOME = "Household Income",
+    GOVTPROG = "Government Assistance",
+    POVERTY3 = "Poverty Level",
+    PDEN10 = "Population Density",
+    COUTYP4 = "County Type"
+)
+
+
+importance_df <- as.data.frame(importance(cig.rf))
+importance_df$Variable <- rownames(importance_df)
+
+
+importance_df$DescriptiveName <- descriptive_labels[importance_df$Variable]
+
+
+importance_df$DescriptiveName[is.na(importance_df$DescriptiveName)] <- importance_df$Variable[is.na(importance_df$DescriptiveName)]
+
+
+importance_df <- importance_df[order(importance_df$MeanDecreaseGini, decreasing = TRUE), ]
+
+# plot
+library(ggplot2)
+ggplot(importance_df, aes(x = reorder(DescriptiveName, MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Cigarette Use Frequency per month (Catagorical)",
+    subtitle = "Measured by Mean Decrease in Gini Index",
+    x = "Demographic Predictor",
+    y = "Importance Score"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.title = element_text(size = 13),
+    axis.text = element_text(size = 12)
+  )
+
+```
+
+looking at days usuing cigarettes over the past month
+
+
+```{r include=TRUE}
+
+library(partykit)
+library(tree)
+library(rpart)
+library(party)
+
+
+youth_clean$IRALCFY[youth_clean$IRALCFY >= 370] <- NA
+youth_clean <- youth_clean[!is.na(youth_clean$IRALCFY), ]
+
+# Split into training and testing sets
+set.seed(32)
+train_idx <- sample(1:nrow(youth_clean), nrow(youth_clean) * 2/3)
+train_data <- youth_clean[train_idx, ]
+test_data <- youth_clean[-train_idx, ]
+
+# Define formula with demographic predictors
+formula_str <- paste("IRALCFY ~", paste(demographic_cols, collapse = " + "))
+tree_formula <- as.formula(formula_str)
+
+# Create mapping for descriptive labels
+descriptive_labels <- c(
+    IRSEX = "Sex",
+    NEWRACE2 = "Race",
+    HEALTH2 = "General Health",
+    EDUSCHLGO = "School Enrollment",
+    EDUSCHGRD2 = "Grade Level",
+    EDUSKPCOM = "days skipped school",
+    IMOTHER = "Lives with Mother",
+    IFATHER = "Lives with Father",
+    INCOME = "Household Income",
+    GOVTPROG = "Government Assistance",
+    POVERTY3 = "Poverty Level",
+    PDEN10 = "Population Density",
+    COUTYP4 = "County Type"
+)
+
+# Visualization
+cig_rpart <- rpart(tree_formula, data = train_data, method = "anova")
+
+
+is_var <- cig_rpart$frame$var != "<leaf>"
+cig_rpart$frame$var[is_var] <- descriptive_labels[cig_rpart$frame$var[is_var]]
+
+
+cig_party <- as.party(cig_rpart)
+
+# Plot the decision tree with descriptive labels
+plot(cig_party,
+     main = "Decision Tree for Alcohol Consumption Over the Past Year",
+     tp_args = list(id = FALSE))
+
+
+```
+```{r}
+youth_clean$IRALCFY[youth_clean$IRALCFY >= 370] <- NA
+youth_clean <- youth_clean[!is.na(youth_clean$IRALCFY), ]
+
+set.seed(32)
+train_idx <- sample(1:nrow(youth_clean), nrow(youth_clean) * 2/3)
+train_data <- youth_clean[train_idx, ]
+test_data <- youth_clean[-train_idx, ]
+
+# using random forest on the dataset
+formula_str <- paste("IRALCFY ~", paste(demographic_cols, collapse = " + "))
+tree_formula <- as.formula(formula_str)
+
+# Remove rows with any NA in the model variables
+model_data <- youth_clean[, c("IRALCFY", demographic_cols)]
+model_data <- na.omit(model_data)
+
+# Train/test split
+set.seed(32)
+train_idx <- sample(1:nrow(model_data), nrow(model_data) * 2/3)
+train_data <- model_data[train_idx, ]
+test_data <- model_data[-train_idx, ]
+
+library(randomForest)
+
+rf_control <- trainControl(method = "cv", number = 3)
+rf_grid <- expand.grid(
+  mtry = c(2, 4, 6)  # adjust based on number of predictors
+)
+
+set.seed(123)
+rf_model <- randomForest(tree_formula, data = train_data, ntree = 1000, importance = TRUE,  trControl = rf_control, tuneGrid = rf_grid)
+
+Alcohol_Usage_RF <- rf_model
+plot(Alcohol_Usage_RF)
+
+# Predict
+rf_preds <- predict(rf_model, newdata = test_data)
+
+# Calculate RMSE
+rmse <- sqrt(mean((rf_preds - test_data$IRALCFY)^2))
+print(paste("Random Forest RMSE:", round(rmse, 2)))
+
+
+importance_values <- importance(rf_model)  # This gives %IncMSE and IncNodePurity
+importance_df <- data.frame(Variable = rownames(importance_values),
+                            IncNodePurity = importance_values[, "IncNodePurity"],
+                            row.names = NULL)
+
+# Define readable names for demographic variables
+readable_names <- c(
+  IRSEX = "Sex",
+  NEWRACE2 = "Race/Ethnicity",
+  HEALTH2 = "Self-Reported Health",
+  EDUSCHLGO = "School Enrollment",
+  EDUSCHGRD2 = "Grade Level",
+  EDUSKPCOM = "Days skipped",
+  IMOTHER = "Mother's Presence",
+  IFATHER = "Father's Presence",
+  INCOME = "Household Income",
+  GOVTPROG = "Gov't Program Use",
+  POVERTY3 = "Poverty Level",
+  PDEN10 = "Population Density",
+  COUTYP4 = "County Type"
+)
+
+# Map readable names
+importance_df$Readable <- ifelse(importance_df$Variable %in% names(readable_names),
+                                 readable_names[importance_df$Variable],
+                                 importance_df$Variable)
+
+# Plot
+library(ggplot2)
+
+ggplot(importance_df, aes(x = reorder(Readable, IncNodePurity), y = IncNodePurity)) +
+  geom_bar(stat = "identity", fill = "darkorange") +
+  coord_flip() +
+  labs(title = "Alcohol use per year (Random Forest)",
+       x = "Demographic Variables",
+       y = "Increase in Node Purity") +
+  theme_minimal(base_size = 14)
+```
+
+
+```{r}
+library(gbm)
+youth_clean$IRALCFY[youth_clean$IRALCFY >= 370] <- NA
+youth_clean <- youth_clean[!is.na(youth_clean$IRALCFY), ]
+
+set.seed(42)
+cig_boost <- gbm(
+  formula = tree_formula,
+  data = train_data,
+  distribution = "gaussian",  # For regression
+  n.trees = 200,
+  interaction.depth = 3,
+  shrinkage = 0.01,
+  cv.folds = 5
+)
+
+library(caret)
+library(gbm)
+
+set.seed(42)
+
+gbm_grid <- expand.grid(
+  n.trees = c(100, 500, 1000),
+  interaction.depth = c(2, 4, 6),
+  shrinkage = c(0.01, 0.05, 0.1),
+  n.minobsinnode = c(5, 10)
+)
+
+ctrl <- trainControl(method = "cv", number = 5)
+
+gbm_tuned <- train(
+  IRALCFY ~ .,  # Replace with your formula
+  data = train_data,
+  method = "gbm",
+  trControl = ctrl,
+  verbose = FALSE,
+  tuneGrid = gbm_grid
+)
+
+print(gbm_tuned)
+plot(gbm_tuned)
+
+
+
+# Hyperparameter tuning for Plot performance (cross-validated error)
+plot(cig_boost)
+best_iter <- gbm.perf(cig_boost, method = "cv")
+
+# Predict on test data
+boost_preds <- predict(cig_boost, newdata = test_data, n.trees = best_iter)
+
+# Evaluate with RMSE
+rmse <- sqrt(mean((boost_preds - test_data$IRALCFY)^2))
+print(paste("Boosting RMSE:", round(rmse, 2)))
+
+
+#visualization
+readable_names <- c(
+  IRSEX = "Sex",
+  NEWRACE2 = "Race/Ethnicity",
+  HEALTH2 = "Self-Reported Health",
+  EDUSCHLGO = "School Enrollment",
+  EDUSCHGRD2 = "Grade Level",
+  EDUSKPCOM = "Days Skipped School",
+  IMOTHER = "Mother Present",
+  IFATHER = "Father Present",
+  INCOME = "Household Income",
+  GOVTPROG = "Gov't Program Use",
+  POVERTY3 = "Poverty Level",
+  PDEN10 = "Population Density",
+  COUTYP4 = "County Type"
+)
+importance_df <- summary(cig_boost, n.trees = best_iter, plotit = FALSE)
+
+# Add readable names
+importance_df$Readable <- ifelse(importance_df$var %in% names(readable_names),
+                                 readable_names[importance_df$var],
+                                 importance_df$var)
+
+library(ggplot2)
+ggplot(importance_df, aes(x = reorder(Readable, rel.inf), y = rel.inf)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Alcohol use per year (Boosting)",
+       x = "Variables",
+       y = "Relative Influence") +
+  theme_minimal(base_size = 14)
+
+
+top_vars <- importance_df$var[1:6]  # Top 6 variables
+par(mfrow = c(2, 3))
+for (v in top_vars) {
+  var_name <- ifelse(v %in% names(readable_names), readable_names[v], v)
+  plot(cig_boost, i.var = v, n.trees = best_iter, main = var_name)
+}
+par(mfrow = c(1, 1))
+
+```
+
